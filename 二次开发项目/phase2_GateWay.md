@@ -842,4 +842,142 @@ Gateway 通过 **role + scope** 体系而非 **client ID** 来控制权限。这
 
 ---
 
+## 11. 守护进程与进程管理
+
+Gateway 不仅是 WS/HTTP 服务，还包含完整的守护进程生命周期管理和子进程控制。
+
+### 11.1 源码目录
+
+```
+src/daemon/                               ← 守护进程管理
+├── gateway-entrypoint.ts                 ← Gateway 守护进程入口
+├── launchd-plist.ts                      ← macOS launchd plist 生成
+├── launchd-recovery.ts                   ← launchd 崩溃恢复
+├── launchd-restart-handoff.ts            ← 重启时的状态交接
+├── lifecycle.ts                          ← 守护进程生命周期 (install/start/stop/uninstall)
+├── container-context.ts                  ← 容器环境感知 (Docker/K8s)
+├── diagnostics.ts                        ← 守护进程诊断
+├── inspect.ts                            ← 运行时检查
+├── cmd-argv.ts                           ← 命令行参数构建
+├── cmd-set.ts                            ← launchd 命令集
+├── exec-file.ts                          ← 可执行文件定位
+└── future-config-guard.ts                ← 未来配置兼容守卫
+
+src/process/                              ← 进程管理
+├── exec.ts                               ← 子进程执行
+├── command-queue.ts                      ← 命令车道队列 (跨 L4 调度层共享)
+├── kill-tree.ts                          ← 进程树终止 (含子进程)
+├── spawn-utils.ts                        ← spawn 工具函数
+├── lanes.ts                              ← 车道枚举 (main/cron/subagent/nested)
+├── linux-oom-score.ts                    ← Linux OOM 分数调节
+├── child-process-bridge.ts               ← 子进程通信桥
+├── windows-command.ts                    ← Windows 命令兼容
+└── supervisor/                           ← 进程监管
+```
+
+### 11.2 守护进程生命周期
+
+```
+openclaw gateway --daemon
+  │
+  ├─ 1. daemon/lifecycle.ts → install (写入 launchd plist)
+  ├─ 2. daemon/lifecycle.ts → start (launchctl load)
+  ├─ 3. daemon/gateway-entrypoint.ts → 入口
+  │     ├─ container-context.ts → 检测容器环境
+  │     └─ future-config-guard.ts → 配置兼容检查
+  ├─ 4. Gateway 运行中
+  │     ├─ launchd-recovery.ts → 崩溃自动重启
+  │     └─ launchd-restart-handoff.ts → 重启时保持状态
+  └─ 5. daemon/lifecycle.ts → stop (launchctl unload)
+```
+
+### 11.3 进程管理关键接口
+
+```typescript
+// src/process/exec.ts — 子进程执行
+spawnChildProcess(command, args, opts): ChildProcess
+
+// src/process/kill-tree.ts — 进程树终止
+killTree(pid, signal): Promise<void>
+
+// src/process/linux-oom-score.ts — OOM 保护
+adjustOomScore(pid, score): void  // score: -1000(禁用kill) ~ 1000(优先kill)
+```
+
+---
+
+## 12. 设备配对系统
+
+### 12.1 设计目标
+
+设备配对提供了比 token 更强的安全保证——每个设备拥有 Ed25519 密钥对，通过挑战-应答协议证明身份。
+
+### 12.2 源码目录
+
+```
+src/pairing/                              ← 配对核心
+├── pairing-challenge.ts                  ← 挑战-应答协议
+├── pairing-messages.ts                   ← 配对消息格式
+├── pairing-store.ts                      ← 配对存储 (持久化)
+├── pairing-store.types.ts                ← 配对存储类型
+├── pairing-labels.ts                     ← 设备标签
+├── setup-code.ts                         ← 设置码生成/验证
+├── allow-from-store-file.ts              ← allow-from 持久化
+└── allow-from-store-read.ts              ← allow-from 读取
+
+extensions/device-pair/                   ← 配对插件 (CLI + UI)
+├── index.ts                              ← 插件入口
+├── pair-command-auth.ts                  ← 配对命令认证
+├── pair-command-approve.ts               ← 配对批准命令
+├── qr-image.ts                           ← QR 码生成
+└── notify.ts                             ← 配对通知
+```
+
+### 12.3 配对流程
+
+```
+新设备首次连接
+  │
+  ├─ 1. Gateway 发送 connect.challenge { nonce }
+  │
+  ├─ 2. 设备发送 connect 请求
+  │     ├─ device.id = SHA-256(publicKey).hex
+  │     ├─ device.publicKey = Ed25519 公钥 (base64url)
+  │     └─ device.signature = sign(v3|deviceId|clientId|...|nonce)
+  │
+  ├─ 3. Gateway 验证签名
+  │     ├─ 通过 → 检查配对状态
+  │     │   ├─ 已配对 → 颁发/验证 deviceToken
+  │     │   └─ 未配对 → 返回 PAIRING_REQUIRED
+  │     └─ 失败 → DEVICE_AUTH_SIGNATURE_INVALID
+  │
+  ├─ 4. 用户批准配对
+  │     ├─ WebUI: devices.approve(requestId)
+  │     ├─ CLI: pnpm openclaw devices approve --latest
+  │     └─ setup-code: 输入预设的配对码
+  │
+  └─ 5. Gateway 颁发 deviceToken → 持久化到 pairing-store
+        → 后续连接凭 deviceToken 免重复配对
+```
+
+### 12.4 跨端签名一致性
+
+> 源码：`src/gateway/device-auth.ts`
+
+签名 payload 格式在 TS/Swift/Kotlin 三端严格一致：
+
+```
+v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily
+```
+
+各端实现：
+
+| 端         | 源文件                                                | 函数                                 |
+| ---------- | ----------------------------------------------------- | ------------------------------------ |
+| TypeScript | `src/gateway/device-auth.ts`                          | `buildDeviceAuthPayloadV3()`         |
+| Swift      | `apps/shared/OpenClawKit/.../DeviceAuthPayload.swift` | `GatewayDeviceAuthPayload.buildV3()` |
+| Kotlin     | `apps/android/.../DeviceAuthPayload.kt`               | `DeviceAuthPayload.buildV3()`        |
+
+---
+
 > 本文档基于源码静态分析得出。具体函数级行为请以源码与单元测试为最终参考。

@@ -1,5 +1,7 @@
 # AGENTS.MD
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 Telegraph style. Root rules only. Read scoped `AGENTS.md` before subtree work.
 Skills own workflows; root owns hard policy and routing.
 
@@ -19,6 +21,7 @@ Skills own workflows; root owns hard policy and routing.
 
 ## Map
 
+- Monorepo: pnpm workspace (`pnpm-workspace.yaml`) — root `.`, `ui/`, `packages/*`, `extensions/*`. Node linker hoisted.
 - Core TS: `src/`, `ui/`, `packages/`; plugins: `extensions/`; SDK: `src/plugin-sdk/*`; channels: `src/channels/*`; loader: `src/plugins/*`; protocol: `src/gateway/protocol/*`; docs/apps: `docs/`, `apps/`.
 - Installers: sibling `../openclaw.ai`.
 - Scoped guides: `extensions/`, `src/{plugin-sdk,channels,plugins,gateway,gateway/protocol,agents}/`, `test/helpers*/`, `docs/`, `ui/`, `scripts/`.
@@ -62,9 +65,12 @@ Skills own workflows; root owns hard policy and routing.
 - Checks in a normal source checkout: `pnpm check:changed`; lanes: `pnpm changed:lanes --json`; staged: `pnpm check:changed --staged`; full: `pnpm check`.
 - Checks in a Codex worktree or linked/sparse checkout: avoid direct local `pnpm check*`; use `node scripts/crabbox-wrapper.mjs run ... --shell -- "pnpm check:changed"` so pnpm runs inside Testbox, not locally.
 - Extension tests: `pnpm test:extensions`, `pnpm test extensions`, `pnpm test extensions/<id>`.
+- Single extension: `pnpm test:extension <name>` (list ids: `pnpm test:extension --list`).
+- Contract tests: `pnpm test:contracts`, `pnpm test:contracts:channels`, `pnpm test:contracts:plugins`.
+- Import boundary checks: `node scripts/check-src-extension-import-boundary.mjs --json` (src), `node scripts/check-sdk-package-extension-import-boundary.mjs --json` (SDK/packages), `node scripts/check-test-helper-extension-import-boundary.mjs --json` (test helpers).
 - Typecheck: `tsgo` lanes only (`pnpm tsgo*`, `pnpm check:test-types`); never add `tsc --noEmit`, `typecheck`, `check:types`.
 - Formatting: `oxfmt`, not Prettier. Use repo wrappers (`pnpm format:*`, `pnpm lint:*`, `scripts/run-oxlint.mjs`).
-- Build before push when build output, packaging, lazy/module boundaries, dynamic imports, or published surfaces can change.
+- Build: `tsdown` (via `node scripts/build-all.mjs`), not `tsc`. Build before push when build output, packaging, lazy/module boundaries, dynamic imports, or published surfaces can change.
 
 ## Validation
 
@@ -76,6 +82,7 @@ Skills own workflows; root owns hard policy and routing.
 - One/few files local. If a local command fans out, stop and move broad proof to Crabbox/Testbox.
 - Before handoff/push: prove touched surface. Before landing to `main`: issue proof plus appropriate full/broad proof unless scope is clearly narrow.
 - Pre-land/pre-commit code changes: use `$autoreview` until no accepted/actionable findings remain, unless equivalent manual review already done, trivial/docs-only, or user opts out.
+- Pre-review: `codex review --base origin/main` locally before opening or updating a PR.
 - If proof is blocked, say exactly what is missing and why.
 - Do not land related failing format/lint/type/build/tests. If unrelated on latest `origin/main`, say so with scoped proof.
 - Docs/changelog-only and CI/workflow metadata-only: `git diff --check` plus relevant docs/workflow sanity; escalate only if scripts/config/generated/package/runtime behavior changed.
@@ -121,6 +128,7 @@ Skills own workflows; root owns hard policy and routing.
 - Classes: no prototype mixins/mutations. Prefer inheritance/composition. Tests prefer per-instance stubs.
 - Comments: brief, only non-obvious logic.
 - Split files around ~700 LOC when clarity/testability improves.
+- Control UI (`ui/`): Lit with **legacy** decorators (`experimentalDecorators: true`, `useDefineForClassFields: false`). Use `@state()`, `@property()` — do not flip to standard decorators without updating the UI build tooling.
 - Naming: **OpenClaw** product/docs; `openclaw` CLI/package/path/config.
 - English: American spelling.
 
@@ -148,6 +156,7 @@ Skills own workflows; root owns hard policy and routing.
 ## Git
 
 - Commit via `scripts/committer "<msg>" <file...>`; stage intended files only.
+- Iterative local commits: `scripts/committer --fast "<msg>" <file...>` skips repo-wide pre-commit checks. Only use after you've already run targeted validation for the touched surface.
 - Commits: conventional-ish, concise, grouped.
 - No manual stash/autostash unless explicit. No branch/worktree changes unless requested.
 - `main`: no merge commits; rebase on latest `origin/main` before push. After one green run plus clean rebase sanity, do not chase moving `main` with repeated full gates.
